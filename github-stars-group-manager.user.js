@@ -4,7 +4,7 @@
 // @version      1.1.0
 // @description  为 GitHub Stars 页面添加分组管理功能，支持自动推荐分组、Tab 切换、搜索筛选、JSON 导入导出
 // @author       yuyunzhi2
-// @include      /^https:\/\/github\.com\/[^?]+?\?tab=stars/
+// @match        https://github.com/*
 // @icon         https://github.githubassets.com/favicons/favicon.svg
 // @grant        GM_setValue
 // @grant        GM_getValue
