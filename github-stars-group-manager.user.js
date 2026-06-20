@@ -896,6 +896,13 @@
 
       /* Hide original GitHub stars content */
       #user-starred-repos { display: none !important; }
+      /* Hide GitHub's native Lists section, Starred topics, and filter bar */
+      .js-starred-lists-container,
+      .starred-lists,
+      [data-testid="starred-lists"],
+      .js-starred-topics-container,
+      .starred-topics,
+      [data-testid="starred-topics"] { display: none !important; }
 
       /* Toolbar */
       .sgm-toolbar {
@@ -1409,9 +1416,26 @@
       if (starredEl && starredEl.parentNode) {
         // Insert before the hidden starred content, inside .Layout-main
         starredEl.parentNode.insertBefore(this.container, starredEl);
-        // Also hide the sidebar to give more space
+
+        // Hide the sidebar to give more space
         const sidebar = starredEl.closest('.Layout')?.querySelector('.Layout-sidebar');
         if (sidebar) sidebar.style.display = 'none';
+
+        // Hide all sibling sections that are not our container
+        // This includes Lists, Starred topics, filter bars etc.
+        const parent = starredEl.parentNode;
+        for (const child of parent.children) {
+          if (child === this.container || child === starredEl) continue;
+          // Hide headings for Lists/Starred topics sections
+          if (child.querySelector && (
+            child.querySelector('h2')?.textContent?.includes('Lists') ||
+            child.querySelector('h2')?.textContent?.includes('Starred topics') ||
+            child.querySelector('[data-testid="starred-lists"]') ||
+            child.querySelector('[data-testid="starred-topics"]')
+          )) {
+            child.style.display = 'none';
+          }
+        }
       } else {
         // Fallback: prepend into .Layout-main or main
         const mainContent = document.querySelector('.Layout-main') || document.querySelector('main') || document.body;
@@ -2088,8 +2112,10 @@
       const urlMatch = window.location.pathname.match(/^\/([^/]+)/);
       const urlUsername = urlMatch ? urlMatch[1] : '';
       const loggedInUser = this._getLoggedInUser();
+
+      // Skip only if logged in AND viewing someone else's stars
       if (loggedInUser && urlUsername.toLowerCase() !== loggedInUser.toLowerCase()) {
-        return; // Not our own Stars page, skip
+        return;
       }
 
       this._username = urlUsername;
@@ -2100,6 +2126,12 @@
 
       // Load cached repos first, then optionally refresh from API
       this._loadCachedData();
+
+      if (this._repos.length === 0) {
+        // No cache: try DOM parsing first for instant display, then API for full data
+        this._loadFromDOM();
+      }
+
       await this._loadFromAPI();
       this._bindUIEvents();
       this._render();
@@ -2112,6 +2144,45 @@
     _getLoggedInUser() {
       const meta = document.querySelector('meta[name="user-login"]');
       return meta ? meta.content : '';
+    }
+
+    /**
+     * Parse repos from the current page DOM as a quick fallback.
+     * This gives instant results before the API call completes.
+     */
+    _loadFromDOM() {
+      const repoEls = document.querySelectorAll('#user-starred-repos .col-12.d-flex');
+      if (repoEls.length === 0) return;
+
+      const repos = [];
+      for (const el of repoEls) {
+        try {
+          const nameEl = el.querySelector('h3 a');
+          const descEl = el.querySelector('p');
+          const langEl = el.querySelector('[itemprop="programmingLanguage"]');
+          const starsEl = el.querySelector('.stargazers');
+          const link = nameEl?.getAttribute('href') || '';
+
+          if (!link) continue;
+
+          repos.push(normalizeRepo({
+            full_name: link.replace(/^\//, ''),
+            description: descEl?.textContent?.trim() || '',
+            language: langEl?.textContent?.trim() || '',
+            topics: [],
+            stargazers_count: parseInt(starsEl?.textContent?.replace(/,/g, '') || '0'),
+            html_url: 'https://github.com' + link,
+            updated_at: '',
+          }));
+        } catch (e) {
+          // Skip malformed entries
+        }
+      }
+
+      if (repos.length > 0) {
+        this._repos = repos;
+        this.ui.showToast(`已从页面解析 ${repos.length} 个仓库（API 加载中...）`);
+      }
     }
 
     _loadCachedData() {
@@ -2127,15 +2198,20 @@
       // Use cache if valid and not forced refresh
       if (!forceRefresh && cache.repos && cache.repos.length > 0 && !this.storage.isCacheExpired()) {
         this._repos = cache.repos.map(normalizeRepo);
-        this.ui.showToast(`已加载 ${this._repos.length} 个缓存仓库`);
-        return;
+        if (this._repos.length > 0) {
+          this.ui.showToast(`已加载 ${this._repos.length} 个缓存仓库`);
+          return;
+        }
       }
 
       // Rate limit check (if we have info from previous requests)
       if (this.api._lastRateLimit && this.api._lastRateLimit.remaining < 10 && !this._settings.github_token) {
         const resetTime = new Date(this.api._lastRateLimit.reset * 1000);
         this.ui.showToast(`API 速率限制即将耗尽（剩余 ${this.api._lastRateLimit.remaining} 次），请等待至 ${resetTime.toLocaleTimeString()}`);
-        if (this._repos.length > 0) return; // Use cache instead
+        if (this._repos.length > 0) {
+          this._render();
+          return; // Use cache instead
+        }
       }
 
       // Check for token
@@ -2166,11 +2242,24 @@
         });
 
         this.ui.showToast(`成功加载 ${repos.length} 个仓库`);
+        this._render();
       } catch (err) {
+        console.error('[Stars Group Manager] API fetch failed:', err);
         if (this._repos.length > 0) {
-          this.ui.showToast(`刷新失败 (${err.message})，使用缓存数据`);
+          this.ui.showToast(`API 获取失败 (${err.message})，使用${this._repos.length < 50 ? '页面解析' : '缓存'}数据`);
+          this._render();
         } else {
-          this.ui.showError(`加载失败: ${err.message}`, () => this._loadFromAPI(true));
+          // Try DOM fallback one more time
+          this._loadFromDOM();
+          if (this._repos.length > 0) {
+            this.ui.showToast(`API 获取失败，已从页面解析 ${this._repos.length} 个仓库。建议在设置中配置 GitHub Token 以获取全量数据。`);
+            this._render();
+          } else {
+            this.ui.showError(
+              `加载失败: ${err.message}。请在设置中配置 GitHub Personal Access Token 以提高 API 限额。`,
+              () => this._loadFromAPI(true)
+            );
+          }
         }
       }
     }
