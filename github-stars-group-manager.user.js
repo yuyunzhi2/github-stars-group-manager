@@ -405,6 +405,26 @@
     }
 
     /**
+     * Set the groups for a repo (multi-group support).
+     * Removes from groups not in the list, adds to groups in the list.
+     */
+    setRepoGroups(full_name, groupIds) {
+      const groups = this.getAll();
+      const targetSet = new Set(groupIds);
+      for (const id in groups) {
+        const idx = groups[id].repos.indexOf(full_name);
+        if (targetSet.has(id)) {
+          // Should be in this group
+          if (idx === -1) groups[id].repos.push(full_name);
+        } else {
+          // Should NOT be in this group
+          if (idx !== -1) groups[id].repos.splice(idx, 1);
+        }
+      }
+      this.save();
+    }
+
+    /**
      * Move a repo from one group to another.
      */
     moveRepo(full_name, fromGroupId, toGroupId) {
@@ -430,8 +450,8 @@
     }
 
     /**
-     * Get the group id that a repo belongs to. Returns null if ungrouped.
-     * A repo can belong to at most one group in this design.
+     * Get the first group id that a repo belongs to. Returns null if ungrouped.
+     * A repo can belong to multiple groups.
      */
     getRepoGroup(full_name) {
       const groups = this.getAll();
@@ -439,6 +459,18 @@
         if (groups[id].repos.includes(full_name)) return id;
       }
       return null;
+    }
+
+    /**
+     * Get all group ids that a repo belongs to. Returns [] if ungrouped.
+     */
+    getRepoGroups(full_name) {
+      const groups = this.getAll();
+      const matched = [];
+      for (const id in groups) {
+        if (groups[id].repos.includes(full_name)) matched.push(id);
+      }
+      return matched;
     }
 
     /**
@@ -735,8 +767,8 @@
       // Group filter
       if (this.groupFilter !== null) {
         if (this.groupFilter === '__none__') {
-          // Show only ungrouped repos
-          result = result.filter(r => groupManager.getRepoGroup(r.full_name) === null);
+          // Show only ungrouped repos (not in any group)
+          result = result.filter(r => groupManager.getRepoGroups(r.full_name).length === 0);
         } else {
           // Show repos in specific group
           const groupRepos = new Set(groupManager.getGroupRepos(this.groupFilter));
@@ -1100,6 +1132,12 @@
         align-items: center;
         gap: 4px;
       }
+      .sgm-card-group-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-top: 4px;
+      }
       .sgm-card-group-tag {
         display: inline-flex;
         align-items: center;
@@ -1220,6 +1258,39 @@
         font-weight: 500;
         color: var(--fgColor-muted, #656d76);
         margin-bottom: 4px;
+      }
+      .sgm-assign-checkbox-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        max-height: 300px;
+        overflow-y: auto;
+        padding: 4px 0;
+      }
+      .sgm-assign-checkbox-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border-radius: 16px;
+        border: 1px solid var(--borderColor-default, #d0d7de);
+        cursor: pointer;
+        font-size: 13px;
+        transition: background 0.15s;
+        user-select: none;
+      }
+      .sgm-assign-checkbox-label:hover {
+        background: var(--bgColor-muted, #f6f8fa);
+      }
+      .sgm-assign-checkbox {
+        margin: 0;
+        accent-color: var(--color-accent-fg, #0969da);
+      }
+      .sgm-assign-color-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        flex-shrink: 0;
       }
       .sgm-color-input {
         width: 40px;
@@ -1589,9 +1660,24 @@
 
       let html = '';
       for (const repo of pageRepos) {
-        const groupId = this._findGroupForRepo(repo.full_name, groups);
-        const group = groupId ? groups[groupId] : null;
+        const groupIds = this._findGroupsForRepo(repo.full_name, groups);
         const isSelected = this._selectedRepos.has(repo.full_name);
+
+        // Build group tags HTML
+        let groupTagsHtml = '';
+        if (groupIds.length > 0) {
+          for (const gid of groupIds) {
+            const g = groups[gid];
+            if (!g) continue;
+            groupTagsHtml += `<span class="sgm-card-group-tag" data-repo="${this._escAttr(repo.full_name)}"
+              style="background:${safeColor(g.color)}22;color:${safeColor(g.color)};border:1px solid ${safeColor(g.color)}44"
+              title="点击修改分组">${this._escHtml(g.name)} ✎</span>`;
+          }
+        } else {
+          groupTagsHtml = `<span class="sgm-card-group-tag" data-repo="${this._escAttr(repo.full_name)}"
+            style="background:var(--bgColor-muted,#f6f8fa);color:var(--fgColor-muted,#656d76);border:1px solid var(--borderColor-default,#d0d7de)"
+            title="点击添加到分组">+ 分组</span>`;
+        }
 
         html += `<div class="sgm-card">
           <input type="checkbox" class="sgm-card-checkbox"
@@ -1603,12 +1689,8 @@
             <div class="sgm-card-meta">
               ${repo.language ? `<span class="sgm-card-meta-item">📁 ${this._escHtml(repo.language)}</span>` : ''}
               <span class="sgm-card-meta-item">⭐ ${this._formatNum(repo.stargazers_count)}</span>
-              ${group ? `<span class="sgm-card-group-tag" data-repo="${this._escAttr(repo.full_name)}"
-                style="background:${safeColor(group.color)}22;color:${safeColor(group.color)};border:1px solid ${safeColor(group.color)}44"
-                title="点击修改分组">${this._escHtml(group.name)} ✎</span>` : `<span class="sgm-card-group-tag" data-repo="${this._escAttr(repo.full_name)}"
-                style="background:var(--bgColor-muted,#f6f8fa);color:var(--fgColor-muted,#656d76);border:1px solid var(--borderColor-default,#d0d7de)"
-                title="点击添加到分组">+ 分组</span>`}
             </div>
+            <div class="sgm-card-group-tags">${groupTagsHtml}</div>
           </div>
         </div>`;
       }
@@ -1784,23 +1866,28 @@
      * @param {string|null} currentGroupId
      * @returns {Promise} resolved with { action: 'add'|'move'|'remove', groupId }
      */
-    showAssignModal(full_name, groups, currentGroupId) {
+    showAssignModal(full_name, groups, currentGroupIds) {
       return new Promise((resolve, reject) => {
         const overlay = document.createElement('div');
         overlay.className = 'sgm-modal-overlay';
+        const currentSet = new Set(currentGroupIds || []);
 
-        let groupOptions = `<option value="__none__">-- 未分组 --</option>`;
+        let groupCheckboxes = '';
         for (const id in groups) {
           const g = groups[id];
-          groupOptions += `<option value="${id}" ${currentGroupId === id ? 'selected' : ''}>${this._escHtml(g.name)}</option>`;
+          const checked = currentSet.has(id) ? 'checked' : '';
+          groupCheckboxes += `<label class="sgm-assign-checkbox-label">
+            <input type="checkbox" class="sgm-assign-checkbox" data-group-id="${id}" ${checked} />
+            <span class="sgm-assign-color-dot" style="background:${safeColor(g.color)}"></span>
+            ${this._escHtml(g.name)}
+          </label>`;
         }
 
         overlay.innerHTML = `
           <div class="sgm-modal">
             <h3>分配分组</h3>
             <div style="font-size:13px;color:var(--fgColor-muted);margin-bottom:12px">${this._escHtml(full_name)}</div>
-            <label>选择分组</label>
-            <select class="sgm-modal-input" id="sgm-assign-select">${groupOptions}</select>
+            <div class="sgm-assign-checkbox-list">${groupCheckboxes}</div>
             <div class="sgm-modal-actions">
               <button class="sgm-btn" id="sgm-modal-cancel">取消</button>
               <button class="sgm-btn sgm-btn-primary" id="sgm-modal-save">确定</button>
@@ -1808,22 +1895,16 @@
           </div>`;
 
         document.body.appendChild(overlay);
-        const select = overlay.querySelector('#sgm-assign-select');
 
         overlay.querySelector('#sgm-modal-cancel').onclick = () => { overlay.remove(); reject(); };
         overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); reject(); } };
         overlay.querySelector('#sgm-modal-save').onclick = () => {
-          const selectedId = select.value;
+          const selectedIds = [];
+          overlay.querySelectorAll('.sgm-assign-checkbox:checked').forEach(cb => {
+            selectedIds.push(cb.dataset.groupId);
+          });
           overlay.remove();
-          if (selectedId === '__none__') {
-            resolve({ action: 'remove', groupId: currentGroupId });
-          } else if (currentGroupId && currentGroupId !== selectedId) {
-            resolve({ action: 'move', groupId: selectedId, fromGroupId: currentGroupId });
-          } else if (!currentGroupId) {
-            resolve({ action: 'add', groupId: selectedId });
-          } else {
-            reject(); // no change
-          }
+          resolve({ action: 'set', groupIds: selectedIds });
         };
       });
     }
@@ -2058,11 +2139,12 @@
       }
     }
 
-    _findGroupForRepo(full_name, groups) {
+    _findGroupsForRepo(full_name, groups) {
+      const matched = [];
       for (const id in groups) {
-        if (groups[id].repos.includes(full_name)) return id;
+        if (groups[id].repos.includes(full_name)) matched.push(id);
       }
-      return null;
+      return matched;
     }
 
     _renderCards(repos) {
@@ -2384,20 +2466,17 @@
         this.ui.showToast(`已删除分组 "${group.name}"`);
       });
 
-      // Assign single repo to group
+      // Assign single repo to group(s)
       this.ui.on('assignGroup', async (full_name) => {
-        const currentGroupId = this.groups.getRepoGroup(full_name);
+        const currentGroupIds = this.groups.getRepoGroups(full_name);
         try {
-          const result = await this.ui.showAssignModal(full_name, this.groups.getAll(), currentGroupId);
-          if (result.action === 'add') {
-            this.groups.addRepoToGroup(result.groupId, full_name);
-          } else if (result.action === 'move') {
-            this.groups.moveRepo(full_name, result.fromGroupId, result.groupId);
-          } else if (result.action === 'remove') {
-            this.groups.removeRepoFromGroup(result.groupId, full_name);
+          const result = await this.ui.showAssignModal(full_name, this.groups.getAll(), currentGroupIds);
+          if (result.action === 'set') {
+            // Set groups: remove from groups not in result.groupIds, add to new groups
+            this.groups.setRepoGroups(full_name, result.groupIds);
+            this.groups.flush();
+            this._render();
           }
-          this.groups.flush();
-          this._render();
         } catch (e) { /* cancelled */ }
       });
 
