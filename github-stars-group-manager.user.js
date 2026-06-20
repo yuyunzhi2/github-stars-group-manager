@@ -150,8 +150,11 @@
       let page = 1;
       let hasMore = true;
 
+      console.log('[SGM] fetchAllStars — username:', username, 'hasToken:', !!token);
+
       while (hasMore) {
         const url = `${API_BASE}/users/${encodeURIComponent(username)}/starred?per_page=${PER_PAGE}&page=${page}&sort=updated&direction=desc`;
+        console.log('[SGM] Fetching page', page, '...');
 
         const headers = {
           'Accept': 'application/vnd.github.v3+json',
@@ -902,7 +905,9 @@
       [data-testid="starred-lists"],
       .js-starred-topics-container,
       .starred-topics,
-      [data-testid="starred-topics"] { display: none !important; }
+      [data-testid="starred-topics"],
+      /* Also hide via h2 content pattern — the Lists/Topics sections */
+      #user-profile-frame > div:not(#sgm-container) { display: none !important; }
 
       /* Toolbar */
       .sgm-toolbar {
@@ -1411,33 +1416,51 @@
         </div>
       `;
 
-      // Insert at the correct position — where #user-starred-repos lives
+      // Insert at the correct position — replace the entire original stars content
       const starredEl = document.querySelector('#user-starred-repos');
-      if (starredEl && starredEl.parentNode) {
-        // Insert before the hidden starred content, inside .Layout-main
-        starredEl.parentNode.insertBefore(this.container, starredEl);
+      const profileFrame = document.querySelector('#user-profile-frame');
+
+      if (profileFrame) {
+        // Insert SGM container at the very top of the profile frame,
+        // then hide ALL original children (Lists, search bar, starred repos, topics, etc.)
+        profileFrame.insertBefore(this.container, profileFrame.firstChild);
 
         // Hide the sidebar to give more space
+        const sidebar = profileFrame.closest('.Layout')?.querySelector('.Layout-sidebar');
+        if (sidebar) sidebar.style.display = 'none';
+
+        // Hide all other children in the profile frame (original GitHub content)
+        for (const child of profileFrame.children) {
+          if (child === this.container) continue;
+          child.style.display = 'none';
+        }
+      } else if (starredEl && starredEl.parentNode) {
+        // Fallback: insert before #user-starred-repos and hide siblings
+        starredEl.parentNode.insertBefore(this.container, starredEl);
+
         const sidebar = starredEl.closest('.Layout')?.querySelector('.Layout-sidebar');
         if (sidebar) sidebar.style.display = 'none';
 
-        // Hide all sibling sections that are not our container
-        // This includes Lists, Starred topics, filter bars etc.
-        const parent = starredEl.parentNode;
-        for (const child of parent.children) {
-          if (child === this.container || child === starredEl) continue;
-          // Hide headings for Lists/Starred topics sections
-          if (child.querySelector && (
-            child.querySelector('h2')?.textContent?.includes('Lists') ||
-            child.querySelector('h2')?.textContent?.includes('Starred topics') ||
-            child.querySelector('[data-testid="starred-lists"]') ||
-            child.querySelector('[data-testid="starred-topics"]')
-          )) {
-            child.style.display = 'none';
+        // Walk up to hide Lists/Topics sections that may be in parent containers
+        let container = starredEl.parentNode;
+        while (container && container.tagName !== 'MAIN' && container.id !== 'user-profile-frame') {
+          for (const child of container.children) {
+            if (child === this.container || child.contains(this.container)) continue;
+            if (child.contains(starredEl)) continue; // keep starredEl's branch (it's hidden by CSS)
+            // Hide sections containing Lists or Starred topics headings
+            if (child.querySelector && (
+              child.querySelector('h2')?.textContent?.includes('Lists') ||
+              child.querySelector('h2')?.textContent?.includes('Starred topics') ||
+              child.querySelector('[data-testid="starred-lists"]') ||
+              child.querySelector('[data-testid="starred-topics"]')
+            )) {
+              child.style.display = 'none';
+            }
           }
+          container = container.parentNode;
         }
       } else {
-        // Fallback: prepend into .Layout-main or main
+        // Last resort: prepend into .Layout-main or main
         const mainContent = document.querySelector('.Layout-main') || document.querySelector('main') || document.body;
         mainContent.prepend(this.container);
       }
@@ -2113,29 +2136,41 @@
       const urlUsername = urlMatch ? urlMatch[1] : '';
       const loggedInUser = this._getLoggedInUser();
 
+      console.log('[SGM] init() called — urlUser:', urlUsername, 'loggedInUser:', loggedInUser);
+
       // Skip only if logged in AND viewing someone else's stars
       if (loggedInUser && urlUsername.toLowerCase() !== loggedInUser.toLowerCase()) {
+        console.log('[SGM] Skipping — viewing someone else\'s stars');
         return;
       }
 
       this._username = urlUsername;
       this._settings = this.storage.getSettings();
 
-      // Mount UI at the correct position (#user-starred-repos)
+      // Mount UI at the correct position
       this.ui.mount();
+      console.log('[SGM] UI mounted');
 
       // Load cached repos first, then optionally refresh from API
       this._loadCachedData();
+      console.log('[SGM] Cached repos loaded:', this._repos.length);
 
       if (this._repos.length === 0) {
         // No cache: try DOM parsing first for instant display, then API for full data
         this._loadFromDOM();
+        console.log('[SGM] DOM fallback repos:', this._repos.length);
       }
 
-      await this._loadFromAPI();
+      try {
+        await this._loadFromAPI();
+      } catch (err) {
+        console.error('[SGM] _loadFromAPI threw:', err);
+      }
+      console.log('[SGM] After API load, total repos:', this._repos.length);
       this._bindUIEvents();
       this._render();
       this._initialized = true;
+      console.log('[SGM] Initialization complete, rendering', this._repos.length, 'repos');
     }
 
     /**
@@ -2151,7 +2186,8 @@
      * This gives instant results before the API call completes.
      */
     _loadFromDOM() {
-      const repoEls = document.querySelectorAll('#user-starred-repos .col-12.d-flex');
+      // GitHub uses both .col-12.d-flex and .col-12.d-block for repo cards
+      const repoEls = document.querySelectorAll('#user-starred-repos .col-12.d-block, #user-starred-repos .col-12.d-flex');
       if (repoEls.length === 0) return;
 
       const repos = [];
