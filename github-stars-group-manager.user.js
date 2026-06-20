@@ -19,9 +19,6 @@
 (function () {
   'use strict';
 
-  // --- DEBUG: confirm script execution ---
-  console.log('[SGM] Script loaded! URL=' + location.href);
-
   // --- Constants ---
   const API_BASE = 'https://api.github.com';
   const PER_PAGE = 100; // GitHub API max per page
@@ -135,7 +132,6 @@
       this.set(STORAGE_KEYS.RULES, rules);
     }
   }
-console.log('[SGM] Class StorageManager defined OK');
 
   // =========================================================================
   // Task 3: APIFetcher
@@ -155,11 +151,9 @@ console.log('[SGM] Class StorageManager defined OK');
       let page = 1;
       let hasMore = true;
 
-      console.log('[SGM] fetchAllStars — username:', username, 'hasToken:', !!token);
 
       while (hasMore) {
         const url = `${API_BASE}/users/${encodeURIComponent(username)}/starred?per_page=${PER_PAGE}&page=${page}&sort=updated&direction=desc`;
-        console.log('[SGM] Fetching page', page, '...');
 
         const headers = {
           'Accept': 'application/vnd.github.v3+json',
@@ -279,7 +273,6 @@ console.log('[SGM] Class StorageManager defined OK');
       return response.ok;
     }
   }
-console.log('[SGM] Class APIFetcher defined OK');
 
   // =========================================================================
   // Task 4: GroupManager
@@ -510,7 +503,6 @@ console.log('[SGM] Class APIFetcher defined OK');
       return JSON.parse(JSON.stringify(this.load()));
     }
   }
-console.log('[SGM] Class GroupManager defined OK');
 
   // =========================================================================
   // Task 5: AutoGrouper
@@ -719,7 +711,6 @@ console.log('[SGM] Class GroupManager defined OK');
       return { applied, count };
     }
   }
-console.log('[SGM] Class AutoGrouper defined OK');
 
   // =========================================================================
   // Task 6: SearchFilter
@@ -807,7 +798,6 @@ console.log('[SGM] Class AutoGrouper defined OK');
       return [...langs].sort();
     }
   }
-console.log('[SGM] Class SearchFilter defined OK');
 
   // =========================================================================
   // Task 7: ImportExport
@@ -886,7 +876,6 @@ console.log('[SGM] Class SearchFilter defined OK');
       });
     }
   }
-console.log('[SGM] Class ImportExport defined OK');
 
   // =========================================================================
   // Task 8: UIRenderer (CSS + all UI components)
@@ -2119,7 +2108,6 @@ console.log('[SGM] Class ImportExport defined OK');
       this._currentPage = 1;
     }
   }
-console.log('[SGM] Class UIRenderer defined OK');
 
   // =========================================================================
   // Task 9: App main entry
@@ -2147,11 +2135,9 @@ console.log('[SGM] Class UIRenderer defined OK');
       const urlUsername = urlMatch ? urlMatch[1] : '';
       const loggedInUser = this._getLoggedInUser();
 
-      console.log('[SGM] init() called — urlUser:', urlUsername, 'loggedInUser:', loggedInUser);
 
       // Skip only if logged in AND viewing someone else's stars
       if (loggedInUser && urlUsername.toLowerCase() !== loggedInUser.toLowerCase()) {
-        console.log('[SGM] Skipping — viewing someone else\'s stars');
         return;
       }
 
@@ -2160,16 +2146,13 @@ console.log('[SGM] Class UIRenderer defined OK');
 
       // Mount UI at the correct position
       this.ui.mount();
-      console.log('[SGM] UI mounted');
 
       // Load cached repos first, then optionally refresh from API
       this._loadCachedData();
-      console.log('[SGM] Cached repos loaded:', this._repos.length);
 
       if (this._repos.length === 0) {
         // No cache: try DOM parsing first for instant display, then API for full data
         this._loadFromDOM();
-        console.log('[SGM] DOM fallback repos:', this._repos.length);
       }
 
       try {
@@ -2177,11 +2160,9 @@ console.log('[SGM] Class UIRenderer defined OK');
       } catch (err) {
         console.error('[SGM] _loadFromAPI threw:', err);
       }
-      console.log('[SGM] After API load, total repos:', this._repos.length);
       this._bindUIEvents();
       this._render();
       this._initialized = true;
-      console.log('[SGM] Initialization complete, rendering', this._repos.length, 'repos');
     }
 
     /**
@@ -2537,7 +2518,6 @@ console.log('[SGM] Class UIRenderer defined OK');
       );
     }
   }
-console.log('[SGM] Class App defined OK');
 
   // --- Register Tampermonkey menu commands ---
   GM_registerMenuCommand('🔄 刷新 Stars 数据', () => {
@@ -2552,32 +2532,32 @@ console.log('[SGM] Class App defined OK');
 
   // --- Initialize with Turbo/pjax compatibility ---
   let app = null;
+  let _initTimer = null;
 
   function initApp() {
-    console.log('[SGM] initApp called, URL=' + location.href);
     // Only run on Stars tab
-    if (!location.search.includes('tab=stars')) {
-      console.log('[SGM] Not stars tab, skipping');
-      return;
-    }
+    if (!location.search.includes('tab=stars')) return;
 
-    // Prevent duplicate initialization
+    // Debounce: if already initialized and container exists, skip
     const existing = document.getElementById('sgm-container');
+    if (existing && app && app._initialized) return;
+
+    // Remove stale container if any
     if (existing) existing.remove();
 
-    console.log('[SGM] Creating App instance...');
-    try {
-      app = new App();
-      console.log('[SGM] App created, calling init()...');
-      app.init();
-      console.log('[SGM] app.init() returned (async, may still be running)');
-    } catch (err) {
-      console.error('[SGM] Error during init:', err);
-    }
+    // Debounce rapid calls (turbo:load + MutationObserver can fire together)
+    if (_initTimer) clearTimeout(_initTimer);
+    _initTimer = setTimeout(() => {
+      try {
+        app = new App();
+        app.init();
+      } catch (err) {
+        console.error('[SGM] Error during init:', err);
+      }
+    }, 100);
   }
 
   // Initial run
-  console.log('[SGM] About to call initApp()');
   initApp();
 
   // Turbo navigation (GitHub's SPA framework)
