@@ -422,6 +422,7 @@ git commit -m "feat: implement APIFetcher with pagination and token support"
     constructor(storage) {
       this.storage = storage;
       this._groups = null;
+      this._dirty = false;  // dirty flag: defer GM_setValue writes until flush()
     }
 
     /**
@@ -435,10 +436,21 @@ git commit -m "feat: implement APIFetcher with pagination and token support"
     }
 
     /**
-     * Save current groups to storage.
+     * Mark groups as dirty (will be persisted on flush()).
      */
     save() {
-      this.storage.saveGroups(this._groups);
+      this._dirty = true;
+    }
+
+    /**
+     * Flush dirty groups to GM_setValue (actual write).
+     * Call this after a batch of operations or a single user action.
+     */
+    flush() {
+      if (this._dirty) {
+        this.storage.saveGroups(this._groups);
+        this._dirty = false;
+      }
     }
 
     /**
@@ -1636,7 +1648,12 @@ git commit -m "feat: implement ImportExport with JSON download and file parsing"
     }
 
     _bindFilterEvents() {
-      this.container.querySelector('#sgm-search').oninput = (e) => this._emit('search', e.target.value);
+      // Search with 200ms debounce to avoid excessive re-renders
+      let searchTimer = null;
+      this.container.querySelector('#sgm-search').oninput = (e) => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => this._emit('search', e.target.value), 200);
+      };
       this.container.querySelector('#sgm-lang-filter').onchange = (e) => this._emit('filterLang', e.target.value);
       this.container.querySelector('#sgm-sort-by').onchange = (e) => this._emit('sort', { by: e.target.value });
       this.container.querySelector('#sgm-sort-order').onchange = (e) => this._emit('sort', { order: e.target.value });
@@ -2398,7 +2415,7 @@ git commit -m "feat: implement full UI - toolbar, tabs, cards, pagination, modal
         this._render();
       });
 
-      // Search
+      // Search (debounced in UIRenderer._bindFilterEvents at 200ms)
       this.ui.on('search', (query) => {
         this.searchFilter.query = query;
         this.ui.resetPage();
@@ -2431,6 +2448,7 @@ git commit -m "feat: implement full UI - toolbar, tabs, cards, pagination, modal
         try {
           const { name, color } = await this.ui.showGroupModal();
           this.groups.createGroup(name, color);
+          this.groups.flush();
           this._render();
           this.ui.showToast(`已创建分组 "${name}"`);
         } catch (e) { /* cancelled */ }
@@ -2444,6 +2462,7 @@ git commit -m "feat: implement full UI - toolbar, tabs, cards, pagination, modal
           const { name, color } = await this.ui.showGroupModal({ name: group.name, color: group.color, groupId });
           this.groups.renameGroup(groupId, name);
           if (color !== group.color) this.groups.setGroupColor(groupId, color);
+          this.groups.flush();
           this._render();
           this.ui.showToast(`分组已重命名为 "${name}"`);
         } catch (e) { /* cancelled */ }
@@ -2456,6 +2475,7 @@ git commit -m "feat: implement full UI - toolbar, tabs, cards, pagination, modal
         try {
           const { name, color } = await this.ui.showGroupModal({ name: group.name, color: group.color, groupId });
           this.groups.setGroupColor(groupId, color);
+          this.groups.flush();
           this._render();
         } catch (e) { /* cancelled */ }
       });
@@ -2466,6 +2486,7 @@ git commit -m "feat: implement full UI - toolbar, tabs, cards, pagination, modal
         if (!group) return;
         if (!confirm(`确定要删除分组 "${group.name}" 吗？（仓库不会被删除，只会变为未分组）`)) return;
         this.groups.deleteGroup(groupId);
+        this.groups.flush();
         if (this._activeGroupId === groupId) {
           this._activeGroupId = null;
           this.searchFilter.groupFilter = null;
@@ -2486,6 +2507,7 @@ git commit -m "feat: implement full UI - toolbar, tabs, cards, pagination, modal
           } else if (result.action === 'remove') {
             this.groups.removeRepoFromGroup(result.groupId, full_name);
           }
+          this.groups.flush();
           this._render();
         } catch (e) { /* cancelled */ }
       });
@@ -2498,6 +2520,7 @@ git commit -m "feat: implement full UI - toolbar, tabs, cards, pagination, modal
           // Remove from all groups first, then add to target group
           for (const repo of repos) this.groups.removeRepoFromAll(repo);
           this.groups.batchAddToGroup(groupId, repos);
+          this.groups.flush();
           this.ui._selectedRepos.clear();
           this.ui._updateBatchBar();
           this._render();
@@ -2508,6 +2531,7 @@ git commit -m "feat: implement full UI - toolbar, tabs, cards, pagination, modal
       // Batch remove
       this.ui.on('batchRemove', (repos) => {
         for (const repo of repos) this.groups.removeRepoFromAll(repo);
+        this.groups.flush();
         this._render();
         this.ui.showToast(`已从分组中移除 ${repos.length} 个仓库`);
       });
@@ -2523,6 +2547,7 @@ git commit -m "feat: implement full UI - toolbar, tabs, cards, pagination, modal
           const result = await this.ui.showAutoGroupModal(suggestions, ungrouped);
           if (result.confirmed && Object.keys(result.suggestions).length > 0) {
             await this.autoGrouper.applySuggestions(result.suggestions, this.groups, result.clearExisting);
+            this.groups.flush();
             this._render();
             let totalApplied = Object.values(result.suggestions).flat().length;
             this.ui.showToast(`已应用自动分组（${totalApplied} 个仓库）`);
@@ -2553,6 +2578,9 @@ git commit -m "feat: implement full UI - toolbar, tabs, cards, pagination, modal
             this.autoGrouper.saveRules(data.auto_group_rules);
           }
 
+          // Note: importGroups already calls save() internally with flush semantics
+          // since it calls this.save() which now only marks dirty; flush here for safety
+          this.groups.flush();
           this._render();
           this.ui.showToast(`分组数据已${mode === 'overwrite' ? '覆盖' : '合并'}导入`);
         } catch (err) {
@@ -2698,3 +2726,5 @@ git commit -m "fix: integration test fixes and polish"
 | 用户页面限制 | ✅ 已修复：`App.init()` 检查登录用户与 URL 用户是否一致 |
 | topics 空值防护 | ✅ 已修复：`SearchFilter` 和 `AutoGrouper` 中添加 `(r.topics \|\| [])` 防护 |
 | 数据 normalize | ✅ 已修复：添加 `normalizeRepo()` 工具函数，所有数据入口统一处理 |
+| 搜索防抖 | ✅ 已优化：搜索输入 200ms 防抖，避免逐字触发重渲染 |
+| 批量写入优化 | ✅ 已优化：GroupManager 改为脏标记模式，`save()` 仅标记 dirty，`flush()` 一次性写入 GM_setValue |
