@@ -9,7 +9,7 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_addStyle
-// @grant        GM_registerMenuCommand
+// @grant        GM_deleteValue
 // @grant        GM_xmlhttpRequest
 // @connect      api.github.com
 // @run-at       document-idle
@@ -27,6 +27,12 @@
     SETTINGS: 'star_settings',
     RULES: 'star_auto_rules',
   };
+
+  // --- Utility: unique ID generator (prevents Date.now() collision in fast loops) ---
+  let _idCounter = 0;
+  function generateId() {
+    return 'g-' + Date.now().toString(36) + '-' + (++_idCounter).toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+  }
 
   // --- Utility: safe URL/color helpers (prevent XSS) ---
   function safeUrl(url) {
@@ -75,7 +81,7 @@
 
     remove(key) {
       delete this._cache[key];
-      GM_setValue(key, undefined);
+      GM_deleteValue(key);
     }
 
     // Group operations
@@ -145,7 +151,7 @@
       let hasMore = true;
 
       while (hasMore) {
-        const url = `${API_BASE}/users/${username}/starred?per_page=${PER_PAGE}&page=${page}&sort=updated&direction=desc`;
+        const url = `${API_BASE}/users/${encodeURIComponent(username)}/starred?per_page=${PER_PAGE}&page=${page}&sort=updated&direction=desc`;
 
         const headers = {
           'Accept': 'application/vnd.github.v3+json',
@@ -185,7 +191,7 @@
       return {
         full_name: repo.full_name,
         name: repo.name,
-        owner: repo.owner?.login || repo.full_name.split('/')[0],
+        owner: repo.owner?.login || (repo.full_name || '').split('/')[0],
         description: repo.description || '',
         language: repo.language || '',
         topics: repo.topics || [],
@@ -318,7 +324,7 @@
      * @returns {string} group id
      */
     createGroup(name, color = '#58a6ff') {
-      const id = 'g-' + Date.now().toString(36) + '-' + Math.random().toString(36).substr(2, 5);
+      const id = generateId();
       this.load().groups[id] = { name, color, repos: [] };
       this.save();
       return id;
@@ -356,11 +362,14 @@
 
     /**
      * Add a repo (full_name) to a group. Returns true if added, false if already exists.
+     * Enforces single-group constraint: removes from any other group first.
      */
     addRepoToGroup(groupId, full_name) {
       const group = this.load().groups[groupId];
       if (!group) return false;
       if (group.repos.includes(full_name)) return false;
+      // Enforce single-group constraint: remove from other groups
+      this.removeRepoFromAll(full_name);
       group.repos.push(full_name);
       this.save();
       return true;
@@ -477,7 +486,7 @@
             }
           } else {
             // Create new group with new id
-            const newId = 'g-' + Date.now().toString(36) + '-' + Math.random().toString(36).substr(2, 5);
+            const newId = generateId();
             existing[newId] = { name: group.name, color: group.color, repos: [...group.repos] };
           }
         }
@@ -619,9 +628,13 @@
             }
           }
 
-          // Keyword match in text
+          // Keyword match in text (word boundary to prevent substring false matches)
           for (const keyword of rule.keywords) {
-            if (searchText.includes(keyword.toLowerCase())) {
+            const kw = keyword.toLowerCase();
+            // Use word boundary check: match keyword as a whole word or word part
+            // e.g. "api" should not match "canvas", "css" should not match "accessibility"
+            const boundary = new RegExp('(?:^|[\\s/\\-_.,:;|()\\[\\]{}])' + kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:$|[\\s/\\-_.,:;|()\\[\\]{}])', 'i');
+            if (boundary.test(searchText)) {
               score += 3;
             }
           }
@@ -657,7 +670,7 @@
      * @param {string[]} ungrouped - repos to clear from all groups first (optional)
      * @returns {object} { applied: { groupName: groupId }, count: number }
      */
-    async applySuggestions(suggestions, groupManager, clearExisting = false) {
+    applySuggestions(suggestions, groupManager, clearExisting = false) {
       if (clearExisting) {
         // Collect all repo names from suggestions
         const allRepos = Object.values(suggestions).flat();
@@ -815,7 +828,7 @@
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
     /**
@@ -2305,7 +2318,7 @@
         try {
           const result = await this.ui.showAutoGroupModal(suggestions, ungrouped);
           if (result.confirmed && Object.keys(result.suggestions).length > 0) {
-            await this.autoGrouper.applySuggestions(result.suggestions, this.groups, result.clearExisting);
+            this.autoGrouper.applySuggestions(result.suggestions, this.groups, result.clearExisting);
             this.groups.flush();
             this._render();
             let totalApplied = Object.values(result.suggestions).flat().length;
@@ -2368,7 +2381,7 @@
       const groupData = this.groups.getAll();
       const totalCount = this._repos.length;
       const groupedCount = new Set(Object.values(groupData).flatMap(g => g.repos)).size;
-      const ungroupedCount = totalCount - groupedCount;
+      const ungroupedCount = Math.max(0, totalCount - groupedCount);
 
       this.ui.renderLanguageFilter(SearchFilter.getUniqueLanguages(this._repos));
       this.ui.renderTabs(groupData, totalCount, ungroupedCount, this._activeGroupId);
@@ -2388,6 +2401,17 @@
       );
     }
   }
+
+  // --- Register Tampermonkey menu commands ---
+  GM_registerMenuCommand('🔄 刷新 Stars 数据', () => {
+    if (app && app._initialized) app._loadFromAPI(true).then(() => app._render());
+  });
+  GM_registerMenuCommand('🤖 自动分组', () => {
+    if (app && app._initialized) app.ui._emit('autoGroup');
+  });
+  GM_registerMenuCommand('📤 导出分组', () => {
+    if (app && app._initialized) app.importExport.exportJSON(app._username);
+  });
 
   // --- Initialize with Turbo/pjax compatibility ---
   let app = null;
