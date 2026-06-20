@@ -39,6 +39,9 @@ github-stars-group-manager.user.js   // 单文件 Tampermonkey 脚本（所有�
 
 - [ ] **Step 1: 创建脚本文件，写入 UserScript 元信息块和基本骨架**
 
+> **注意**：`@match` 模式 `https://github.com/*tab=stars*` 会匹配所有用户的 Stars 页面。
+> 脚本内部通过 `App.init()` 检查当前登录用户与 URL 用户是否一致来限制作用范围。
+
 ```javascript
 // ==UserScript==
 // @name         GitHub Stars Group Manager
@@ -70,6 +73,31 @@ github-stars-group-manager.user.js   // 单文件 Tampermonkey 脚本（所有�
     RULES: 'star_auto_rules',
   };
 
+  // --- Utility: safe URL/color helpers (prevent XSS) ---
+  function safeUrl(url) {
+    if (!url) return '#';
+    if (/^https?:\/\//i.test(url)) return url;
+    return '#';
+  }
+  function safeColor(color) {
+    if (/^#[0-9a-fA-F]{3,8}$/.test(color || '')) return color;
+    return '#58a6ff'; // default
+  }
+  function normalizeRepo(repo) {
+    return {
+      full_name: repo.full_name || '',
+      name: repo.name || '',
+      owner: repo.owner?.login || (repo.full_name || '').split('/')[0],
+      description: repo.description || '',
+      language: repo.language || '',
+      topics: Array.isArray(repo.topics) ? repo.topics : [],
+      stargazers_count: repo.stargazers_count || 0,
+      html_url: repo.html_url || '',
+      updated_at: repo.updated_at || repo.pushed_at || '',
+      archived: !!repo.archived,
+    };
+  }
+
   // Placeholder classes - will be implemented in subsequent tasks
   class StorageManager { /* Task 2 */ }
   class APIFetcher { /* Task 3 */ }
@@ -80,9 +108,39 @@ github-stars-group-manager.user.js   // 单文件 Tampermonkey 脚本（所有�
   class ImportExport { /* Task 8 */ }
   class App { /* Task 9 */ }
 
-  // --- Initialize ---
-  const app = new App();
-  app.init();
+  // --- Initialize with Turbo/pjax compatibility ---
+  let app = null;
+
+  function initApp() {
+    // Only run on Stars tab
+    if (!location.search.includes('tab=stars')) return;
+
+    // Prevent duplicate initialization
+    const existing = document.getElementById('sgm-container');
+    if (existing) existing.remove();
+
+    app = new App();
+    app.init();
+  }
+
+  // Initial run
+  initApp();
+
+  // Turbo navigation (GitHub's SPA framework)
+  document.addEventListener('turbo:load', initApp);
+  document.addEventListener('turbo:render', initApp);
+
+  // pjax fallback (some GitHub pages still use pjax)
+  document.addEventListener('pjax:end', initApp);
+
+  // URL change fallback (catches all navigation methods)
+  let _lastUrl = location.href;
+  new MutationObserver(() => {
+    if (location.href !== _lastUrl) {
+      _lastUrl = location.href;
+      initApp();
+    }
+  }).observe(document, { subtree: true, childList: true });
 })();
 ```
 
@@ -271,7 +329,7 @@ git commit -m "feat: implement StorageManager for GM_setValue/GM_getValue persis
     }
 
     /**
-     * Make a GM_xmlhttpRequest and return parsed JSON.
+     * Make a GM_xmlhttpRequest and return parsed JSON with rate limit info.
      */
     _request(url, headers = {}) {
       return new Promise((resolve, reject) => {
@@ -280,6 +338,18 @@ git commit -m "feat: implement StorageManager for GM_setValue/GM_getValue persis
           url: url,
           headers: headers,
           onload: (response) => {
+            // Extract rate limit info from response headers
+            const headerStr = response.responseHeaders || '';
+            const getHeader = (name) => {
+              const match = headerStr.match(new RegExp(name + ':\\s*(\\d+)', 'i'));
+              return match ? parseInt(match[1]) : 0;
+            };
+            this._lastRateLimit = {
+              remaining: getHeader('x-ratelimit-remaining'),
+              limit: getHeader('x-ratelimit-limit'),
+              reset: getHeader('x-ratelimit-reset'),
+            };
+
             if (response.status >= 200 && response.status < 300) {
               let data;
               try {
@@ -295,7 +365,13 @@ git commit -m "feat: implement StorageManager for GM_setValue/GM_getValue persis
               } catch (e) {
                 data = null;
               }
-              resolve({ ok: false, status: response.status, data: data });
+              // Provide helpful message for rate limit errors
+              let statusText = response.statusText || '';
+              if (response.status === 403 && this._lastRateLimit.remaining === 0) {
+                const resetTime = new Date(this._lastRateLimit.reset * 1000);
+                statusText = `API 速率限制已耗尽，请等待至 ${resetTime.toLocaleTimeString()}`;
+              }
+              resolve({ ok: false, status: response.status, statusText, data: data });
             }
           },
           onerror: (error) => {
@@ -379,7 +455,7 @@ git commit -m "feat: implement APIFetcher with pagination and token support"
      * @returns {string} group id
      */
     createGroup(name, color = '#58a6ff') {
-      const id = 'g-' + Date.now().toString(36);
+      const id = 'g-' + Date.now().toString(36) + '-' + Math.random().toString(36).substr(2, 5);
       this.load().groups[id] = { name, color, repos: [] };
       this.save();
       return id;
@@ -587,15 +663,16 @@ git commit -m "feat: implement GroupManager with CRUD, batch ops, import/merge"
         {
           name: 'AI / LLM',
           keywords: ['llm', 'gpt', 'transformer', 'language model', 'openai',
-                     'chatgpt', 'ai', 'machine learning', 'deep learning', 'nlp',
+                     'chatgpt', 'machine learning', 'deep learning', 'nlp',
                      'diffusion', 'stable diffusion', 'midjourney', 'copilot',
-                     'embedding', 'rag', 'agent', 'prompt', 'fine-tune'],
+                     'embedding', 'rag', 'agent', 'prompt', 'fine-tune',
+                     'artificial intelligence'],
           topics: ['llm', 'ai', 'machine-learning', 'nlp', 'deep-learning', 'generative-ai'],
         },
         {
           name: '前端开发',
           keywords: ['react', 'vue', 'angular', 'css', 'javascript', 'typescript',
-                     'frontend', 'web', 'component', 'svelte', 'next.js', 'nuxt',
+                     'frontend', 'component', 'svelte', 'next.js', 'nuxt',
                      'tailwind', 'webpack', 'vite', 'sass'],
           topics: ['react', 'vue', 'angular', 'javascript', 'typescript', 'css', 'svelte', 'frontend'],
         },
@@ -608,7 +685,7 @@ git commit -m "feat: implement GroupManager with CRUD, batch ops, import/merge"
         },
         {
           name: '开发工具',
-          keywords: ['cli', 'tool', 'utility', 'extension', 'plugin', 'vim',
+          keywords: ['cli', 'utility', 'extension', 'plugin', 'vim',
                      'neovim', 'vscode', 'editor', 'terminal', 'shell', 'devtools',
                      'productivity', 'automation'],
           topics: ['cli', 'tools', 'vim', 'vscode', 'terminal', 'developer-tools'],
@@ -622,7 +699,7 @@ git commit -m "feat: implement GroupManager with CRUD, batch ops, import/merge"
         },
         {
           name: '数据科学',
-          keywords: ['data', 'pandas', 'numpy', 'jupyter', 'notebook', 'visualization',
+          keywords: ['pandas', 'numpy', 'jupyter', 'notebook', 'visualization',
                      'matplotlib', 'plotly', 'analytics', 'dataframe', 'spark'],
           topics: ['data-science', 'jupyter', 'visualization', 'data-analysis'],
         },
@@ -833,8 +910,8 @@ git commit -m "feat: implement AutoGrouper with keyword/topic matching and rule 
         const q = this.query.toLowerCase();
         result = result.filter(r =>
           r.full_name.toLowerCase().includes(q) ||
-          r.description.toLowerCase().includes(q) ||
-          r.topics.some(t => t.toLowerCase().includes(q)) ||
+          (r.description || '').toLowerCase().includes(q) ||
+          (r.topics || []).some(t => t.toLowerCase().includes(q)) ||
           (r.language && r.language.toLowerCase().includes(q))
         );
       }
@@ -930,7 +1007,7 @@ git commit -m "feat: implement SearchFilter with query, language, and group filt
     }
 
     /**
-     * Import from a JSON file. Returns parsed data or throws error.
+     * Import from a JSON file. Returns parsed and validated data or throws error.
      */
     async importJSON(file) {
       return new Promise((resolve, reject) => {
@@ -942,6 +1019,25 @@ git commit -m "feat: implement SearchFilter with query, language, and group filt
             if (!data.version || !data.groups) {
               reject(new Error('Invalid import file: missing version or groups'));
               return;
+            }
+            // Validate group data structure (XSS prevention)
+            for (const [id, group] of Object.entries(data.groups)) {
+              if (typeof group.name !== 'string' || group.name.length > 100) {
+                reject(new Error(`Invalid group name for id: ${id}`));
+                return;
+              }
+              // Sanitize color — only allow #hex format
+              if (group.color && !/^#[0-9a-fA-F]{3,8}$/.test(group.color)) {
+                group.color = '#58a6ff';
+              }
+              if (!Array.isArray(group.repos)) {
+                reject(new Error(`Invalid repos for group: ${group.name}`));
+                return;
+              }
+              // Validate repo name format (owner/repo)
+              group.repos = group.repos.filter(r =>
+                typeof r === 'string' && /^[a-zA-Z0-9_.\-]+\/[a-zA-Z0-9_.\-]+$/.test(r)
+              );
             }
             resolve(data);
           } catch (err) {
@@ -992,8 +1088,7 @@ git commit -m "feat: implement ImportExport with JSON download and file parsing"
       #sgm-container * { box-sizing: border-box; }
 
       /* Hide original GitHub stars content */
-      body.tab-stars #user-starred-repos,
-      body.tab-stars .Layout-sidebar { display: none !important; }
+      #user-starred-repos { display: none !important; }
 
       /* Toolbar */
       .sgm-toolbar {
@@ -1467,9 +1562,10 @@ git commit -m "feat: implement ImportExport with JSON download and file parsing"
 
     /**
      * Mount the full UI, replacing GitHub's star content area.
-     * @param {HTMLElement} targetEl - the element to replace/append into
+     * Inserts SGM container at the position of #user-starred-repos (which is hidden by CSS).
+     * Falls back to prepending into .Layout-main or main.
      */
-    mount(targetEl) {
+    mount() {
       this.container = document.createElement('div');
       this.container.id = 'sgm-container';
 
@@ -1507,7 +1603,20 @@ git commit -m "feat: implement ImportExport with JSON download and file parsing"
         </div>
       `;
 
-      targetEl.appendChild(this.container);
+      // Insert at the correct position — where #user-starred-repos lives
+      const starredEl = document.querySelector('#user-starred-repos');
+      if (starredEl && starredEl.parentNode) {
+        // Insert before the hidden starred content, inside .Layout-main
+        starredEl.parentNode.insertBefore(this.container, starredEl);
+        // Also hide the sidebar to give more space
+        const sidebar = starredEl.closest('.Layout')?.querySelector('.Layout-sidebar');
+        if (sidebar) sidebar.style.display = 'none';
+      } else {
+        // Fallback: prepend into .Layout-main or main
+        const mainContent = document.querySelector('.Layout-main') || document.querySelector('main') || document.body;
+        mainContent.prepend(this.container);
+      }
+
       this.gridEl = this.container.querySelector('#sgm-grid');
       this.paginationEl = this.container.querySelector('#sgm-pagination');
       this.batchBarEl = this.container.querySelector('#sgm-batch-bar');
@@ -1530,7 +1639,7 @@ git commit -m "feat: implement ImportExport with JSON download and file parsing"
       this.container.querySelector('#sgm-search').oninput = (e) => this._emit('search', e.target.value);
       this.container.querySelector('#sgm-lang-filter').onchange = (e) => this._emit('filterLang', e.target.value);
       this.container.querySelector('#sgm-sort-by').onchange = (e) => this._emit('sort', { by: e.target.value });
-      this.container.querySelector('#sgm-sort-order').onchange = (e) => this._emit('sort', { order: e.target.value }));
+      this.container.querySelector('#sgm-sort-order').onchange = (e) => this._emit('sort', { order: e.target.value });
     }
 
     _bindBatchEvents() {
@@ -1576,7 +1685,7 @@ git commit -m "feat: implement ImportExport with JSON download and file parsing"
         const g = groups[id];
         const isActive = activeGroupId === id;
         html += `<div class="sgm-tab ${isActive ? 'active' : ''}" data-group="${id}"
-          style="${isActive ? 'border-bottom-color:' + g.color : ''}">
+          style="${isActive ? 'border-bottom-color:' + safeColor(g.color) : ''}">
           ${this._escHtml(g.name)} <span class="sgm-tab-count">${g.repos.length}</span>
         </div>`;
       }
@@ -1637,13 +1746,13 @@ git commit -m "feat: implement ImportExport with JSON download and file parsing"
             ${isSelected ? 'checked' : ''}
             data-repo="${this._escAttr(repo.full_name)}" />
           <div class="sgm-card-content">
-            <a class="sgm-card-name" href="${repo.html_url}" target="_blank">${this._escHtml(repo.full_name)}</a>
+            <a class="sgm-card-name" href="${this._escAttr(safeUrl(repo.html_url))}" target="_blank" rel="noopener noreferrer">${this._escHtml(repo.full_name)}</a>
             <div class="sgm-card-desc">${this._escHtml(repo.description)}</div>
             <div class="sgm-card-meta">
               ${repo.language ? `<span class="sgm-card-meta-item">📁 ${this._escHtml(repo.language)}</span>` : ''}
               <span class="sgm-card-meta-item">⭐ ${this._formatNum(repo.stargazers_count)}</span>
               ${group ? `<span class="sgm-card-group-tag" data-repo="${this._escAttr(repo.full_name)}"
-                style="background:${group.color}22;color:${group.color};border:1px solid ${group.color}44"
+                style="background:${safeColor(group.color)}22;color:${safeColor(group.color)};border:1px solid ${safeColor(group.color)}44"
                 title="点击修改分组">${this._escHtml(group.name)} ✎</span>` : `<span class="sgm-card-group-tag" data-repo="${this._escAttr(repo.full_name)}"
                 style="background:var(--bgColor-muted,#f6f8fa);color:var(--fgColor-muted,#656d76);border:1px solid var(--borderColor-default,#d0d7de)"
                 title="点击添加到分组">+ 分组</span>`}
@@ -2182,29 +2291,44 @@ git commit -m "feat: implement full UI - toolbar, tabs, cards, pagination, modal
       this._settings = {};
       this._username = '';
       this._activeGroupId = null; // null = "All"
+      this._initialized = false;
     }
 
     async init() {
-      // Extract username from URL
-      const match = window.location.pathname.match(/^\/([^/]+)/);
-      this._username = match ? match[1] : '';
+      // Only run on own Stars page — check logged-in user matches URL user
+      const urlMatch = window.location.pathname.match(/^\/([^/]+)/);
+      const urlUsername = urlMatch ? urlMatch[1] : '';
+      const loggedInUser = this._getLoggedInUser();
+      if (loggedInUser && urlUsername.toLowerCase() !== loggedInUser.toLowerCase()) {
+        return; // Not our own Stars page, skip
+      }
+
+      this._username = urlUsername;
       this._settings = this.storage.getSettings();
 
-      // Find GitHub's main content area and mount UI
-      const mainEl = document.querySelector('main') || document.querySelector('#js-pjax-container') || document.body;
-      this.ui.mount(mainEl);
+      // Mount UI at the correct position (#user-starred-repos)
+      this.ui.mount();
 
       // Load cached repos first, then optionally refresh from API
       this._loadCachedData();
       await this._loadFromAPI();
       this._bindUIEvents();
       this._render();
+      this._initialized = true;
+    }
+
+    /**
+     * Get the currently logged-in GitHub username from page meta.
+     */
+    _getLoggedInUser() {
+      const meta = document.querySelector('meta[name="user-login"]');
+      return meta ? meta.content : '';
     }
 
     _loadCachedData() {
       const cache = this.storage.getCache();
       if (cache.repos && cache.repos.length > 0) {
-        this._repos = cache.repos;
+        this._repos = cache.repos.map(normalizeRepo);
       }
     }
 
@@ -2213,9 +2337,16 @@ git commit -m "feat: implement full UI - toolbar, tabs, cards, pagination, modal
 
       // Use cache if valid and not forced refresh
       if (!forceRefresh && cache.repos && cache.repos.length > 0 && !this.storage.isCacheExpired()) {
-        this._repos = cache.repos;
+        this._repos = cache.repos.map(normalizeRepo);
         this.ui.showToast(`已加载 ${this._repos.length} 个缓存仓库`);
         return;
+      }
+
+      // Rate limit check (if we have info from previous requests)
+      if (this.api._lastRateLimit && this.api._lastRateLimit.remaining < 10 && !this._settings.github_token) {
+        const resetTime = new Date(this.api._lastRateLimit.reset * 1000);
+        this.ui.showToast(`API 速率限制即将耗尽（剩余 ${this.api._lastRateLimit.remaining} 次），请等待至 ${resetTime.toLocaleTimeString()}`);
+        if (this._repos.length > 0) return; // Use cache instead
       }
 
       // Check for token
@@ -2238,7 +2369,7 @@ git commit -m "feat: implement full UI - toolbar, tabs, cards, pagination, modal
           }
         );
 
-        this._repos = repos;
+        this._repos = repos.map(normalizeRepo);
         this.storage.saveCache({
           repos: repos,
           fetched_at: Date.now(),
@@ -2364,8 +2495,7 @@ git commit -m "feat: implement full UI - toolbar, tabs, cards, pagination, modal
         try {
           const groupId = await this.ui.showBatchMoveModal(this.groups.getAll());
           if (!groupId) return;
-          this.groups.batchAddToGroup(groupId, repos);
-          // Remove from other groups first
+          // Remove from all groups first, then add to target group
           for (const repo of repos) this.groups.removeRepoFromAll(repo);
           this.groups.batchAddToGroup(groupId, repos);
           this.ui._selectedRepos.clear();
@@ -2556,3 +2686,15 @@ git commit -m "fix: integration test fixes and polish"
 | 类型一致性 | ✅ 所有模块的接口在 Task 9 (App) 中正确调用 |
 | API 准确性 | ✅ 使用 `GET /users/{username}/starred` 端点，参数和响应与 GitHub API 文档一致 |
 | 数据存储 | ✅ GM_setValue 用于持久化，JSON 导入导出用于备份 |
+| CSS 隐藏选择器 | ✅ 已修复：`body.tab-stars` 不存在，改用 `#user-starred-repos` 直接选择器 |
+| Turbo 导航兼容 | ✅ 已修复：添加 `turbo:load`/`turbo:render`/`pjax:end` 事件监听 + URL 变化兜底 |
+| 语法错误 | ✅ 已修复：`_bindFilterEvents` 多余右括号已删除 |
+| UI 挂载位置 | ✅ 已修复：在 `#user-starred-repos` 位置插入，而非 `<main>` 末尾 |
+| XSS 防护 | ✅ 已修复：`html_url` 用 `safeUrl()` 验证协议，`color` 用 `safeColor()` 验证格式，导入 JSON 验证数据结构 |
+| ID 冲突 | ✅ 已修复：`createGroup` 添加随机后缀防止批量创建时冲突 |
+| batchMove 逻辑 | ✅ 已修复：改为先移除再添加的正确顺序 |
+| 关键词误匹配 | ✅ 已修复：移除过短关键词（`ai`/`web`/`tool`/`data`），依赖 topics 高权重匹配 |
+| 速率限制 | ✅ 已修复：从响应头提取 `x-ratelimit-*`，低余量时阻止刷新 |
+| 用户页面限制 | ✅ 已修复：`App.init()` 检查登录用户与 URL 用户是否一致 |
+| topics 空值防护 | ✅ 已修复：`SearchFilter` 和 `AutoGrouper` 中添加 `(r.topics \|\| [])` 防护 |
+| 数据 normalize | ✅ 已修复：添加 `normalizeRepo()` 工具函数，所有数据入口统一处理 |
