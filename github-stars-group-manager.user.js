@@ -2553,6 +2553,8 @@
           // Note: importGroups already calls save() internally with flush semantics
           // since it calls this.save() which now only marks dirty; flush here for safety
           this.groups.flush();
+          // Clear cache so next load fetches fresh data from API (includes newly starred repos)
+          this.storage.saveCache({ repos: [], fetched_at: 0, total_count: 0 });
           this._render();
           this.ui.showToast(`分组数据已${mode === 'overwrite' ? '覆盖' : '合并'}导入`);
         } catch (err) {
