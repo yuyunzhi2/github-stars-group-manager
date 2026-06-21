@@ -1026,7 +1026,7 @@
         border-bottom: 1px solid var(--borderColor-default, #d0d7de);
         margin-bottom: 16px;
         overflow-x: auto;
-        flex-wrap: nowrap;
+        flex-wrap: wrap;
       }
       .sgm-tab {
         display: inline-flex;
@@ -2212,14 +2212,13 @@
     }
 
     async init() {
-      // Only run on own Stars page — check logged-in user matches URL user
+      // Only run on logged-in user's own Stars page
       const urlMatch = window.location.pathname.match(/^\/([^/]+)/);
       const urlUsername = urlMatch ? urlMatch[1] : '';
       const loggedInUser = this._getLoggedInUser();
 
-
-      // Skip only if logged in AND viewing someone else's stars
-      if (loggedInUser && urlUsername.toLowerCase() !== loggedInUser.toLowerCase()) {
+      // Skip if not logged in or viewing someone else's page
+      if (!loggedInUser || urlUsername.toLowerCase() !== loggedInUser.toLowerCase()) {
         return;
       }
 
@@ -2246,6 +2245,8 @@
       this._render();
       this._initialized = true;
     }
+
+
 
     /**
      * Get the currently logged-in GitHub username from page meta.
