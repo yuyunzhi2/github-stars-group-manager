@@ -928,17 +928,16 @@
       }
       #sgm-container * { box-sizing: border-box; }
 
-      /* Hide original GitHub stars content */
-      #user-starred-repos { display: none !important; }
-      /* Hide GitHub's native Lists section, Starred topics, and filter bar */
-      .js-starred-lists-container,
-      .starred-lists,
-      [data-testid="starred-lists"],
-      .js-starred-topics-container,
-      .starred-topics,
-      [data-testid="starred-topics"],
-      /* Also hide via h2 content pattern — the Lists/Topics sections */
-      #user-profile-frame > div:not(#sgm-container) { display: none !important; }
+      /* Hide original GitHub stars content ONLY when SGM is active */
+      #user-profile-frame:has(#sgm-container) #user-starred-repos { display: none !important; }
+      /* Hide GitHub's native Lists section, Starred topics, and filter bar ONLY when SGM is active */
+      #user-profile-frame:has(#sgm-container) .js-starred-lists-container,
+      #user-profile-frame:has(#sgm-container) .starred-lists,
+      #user-profile-frame:has(#sgm-container) [data-testid="starred-lists"],
+      #user-profile-frame:has(#sgm-container) .js-starred-topics-container,
+      #user-profile-frame:has(#sgm-container) .starred-topics,
+      #user-profile-frame:has(#sgm-container) [data-testid="starred-topics"],
+      #user-profile-frame:has(#sgm-container) > div:not(#sgm-container) { display: none !important; }
 
       /* Toolbar */
       .sgm-toolbar {
@@ -2212,6 +2211,9 @@
     }
 
     async init() {
+      // Only run on Stars tab — never touch other profile tabs (repositories, etc.)
+      if (!location.search.includes('tab=stars')) return;
+
       // Only run on logged-in user's own Stars page
       const urlMatch = window.location.pathname.match(/^\/([^/]+)/);
       const urlUsername = urlMatch ? urlMatch[1] : '';
@@ -2615,11 +2617,32 @@
   let _initTimer = null;
 
   function initApp() {
-    // Only run on Stars tab
-    if (!location.search.includes('tab=stars')) return;
+    // Only run on Stars tab — clean up SGM if navigating away
+    const isStarsPage = location.search.includes('tab=stars');
+    const existing = document.getElementById('sgm-container');
+
+    if (!isStarsPage) {
+      // Navigate away from Stars: remove SGM container and restore hidden elements
+      if (existing) {
+        existing.remove();
+        // Restore profile frame children that were hidden by mount()
+        const profileFrame = document.querySelector('#user-profile-frame');
+        if (profileFrame) {
+          for (const child of profileFrame.children) {
+            child.style.display = '';
+          }
+          const sidebar = profileFrame.closest('.Layout')?.querySelector('.Layout-sidebar');
+          if (sidebar) sidebar.style.display = '';
+        }
+      }
+      // Remove injected CSS to ensure no residual styles affect other pages
+      const styleEl = document.getElementById(STYLE_ID);
+      if (styleEl) styleEl.remove();
+      app = null;
+      return;
+    }
 
     // Debounce: if already initialized and container exists, skip
-    const existing = document.getElementById('sgm-container');
     if (existing && app && app._initialized) return;
 
     // Remove stale container if any
