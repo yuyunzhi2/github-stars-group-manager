@@ -915,7 +915,8 @@
 
   // --- Inject CSS ---
   const STYLE_ID = 'stars-group-manager-style';
-  if (!document.getElementById(STYLE_ID)) {
+  function injectStyles() {
+    if (document.getElementById(STYLE_ID)) return;
     const styleEl = document.createElement('style');
     styleEl.id = STYLE_ID;
     styleEl.textContent = `
@@ -2623,6 +2624,7 @@
 
     if (!isStarsPage) {
       // Navigate away from Stars: remove SGM container and restore hidden elements
+      if (_initTimer) { clearTimeout(_initTimer); _initTimer = null; }
       if (existing) {
         existing.remove();
         // Restore profile frame children that were hidden by mount()
@@ -2652,6 +2654,8 @@
     if (_initTimer) clearTimeout(_initTimer);
     _initTimer = setTimeout(() => {
       try {
+        // Ensure styles are injected before initializing
+        injectStyles();
         app = new App();
         app.init();
       } catch (err) {
