@@ -56,6 +56,7 @@
       stargazers_count: repo.stargazers_count || 0,
       html_url: repo.html_url || '',
       updated_at: repo.updated_at || repo.pushed_at || '',
+      starred_at: repo.starred_at || '',
       archived: !!repo.archived,
     };
   }
@@ -113,7 +114,7 @@
       return this.get(STORAGE_KEYS.SETTINGS, {
         github_token: '',
         items_per_page: 30,
-        sort_by: 'updated',
+        sort_by: 'starred_at',
         sort_order: 'desc',
         username: '',
       });
@@ -153,10 +154,11 @@
 
 
       while (hasMore) {
-        const url = `${API_BASE}/users/${encodeURIComponent(username)}/starred?per_page=${PER_PAGE}&page=${page}&sort=updated&direction=desc`;
+        const url = `${API_BASE}/users/${encodeURIComponent(username)}/starred?per_page=${PER_PAGE}&page=${page}&sort=created&direction=desc`;
 
         const headers = {
-          'Accept': 'application/vnd.github.v3+json',
+          // Use star+json media type to get starred_at timestamps
+          'Accept': 'application/vnd.github.star+json',
         };
         if (token) {
           headers['Authorization'] = `Bearer ${token}`;
@@ -175,7 +177,7 @@
         if (!items || items.length === 0) {
           hasMore = false;
         } else {
-          const simplified = items.map(this._simplifyRepo);
+          const simplified = items.map(item => this._simplifyRepo(item));
           repos.push(...simplified);
           if (onProgress) onProgress(repos.length);
           hasMore = items.length === PER_PAGE;
@@ -188,8 +190,13 @@
 
     /**
      * Simplify API repo response to only needed fields.
+     * Handles both standard repo format and star+json format where
+     * the repo is nested inside { starred_at, repo } structure.
      */
-    _simplifyRepo(repo) {
+    _simplifyRepo(item) {
+      // star+json format: { starred_at: "...", repo: { full_name, ... } }
+      const repo = item.repo || item;
+      const starred_at = item.starred_at || repo.starred_at || '';
       return {
         full_name: repo.full_name,
         name: repo.name,
@@ -200,6 +207,7 @@
         stargazers_count: repo.stargazers_count || 0,
         html_url: repo.html_url,
         updated_at: repo.updated_at || repo.pushed_at || '',
+        starred_at: starred_at,
         archived: repo.archived || false,
       };
     }
@@ -804,6 +812,10 @@
           case 'stars':
             valA = a.stargazers_count;
             valB = b.stargazers_count;
+            break;
+          case 'starred_at':
+            valA = a.starred_at || '';
+            valB = b.starred_at || '';
             break;
           case 'updated':
           default:
@@ -1466,6 +1478,7 @@
           <input type="text" class="sgm-search" id="sgm-search" placeholder="搜索仓库名、描述、标签..." />
           <select class="sgm-select" id="sgm-lang-filter"><option value="">所有语言</option></select>
           <select class="sgm-select" id="sgm-sort-by">
+            <option value="starred_at">最近 starred</option>
             <option value="updated">最近更新</option>
             <option value="name">名称</option>
             <option value="stars">Stars 数</option>
@@ -2606,7 +2619,10 @@
               ...(self._settings.github_token ? { 'Authorization': `Bearer ${self._settings.github_token}` } : {})
             }).then(res => {
               if (res.ok && res.data) {
-                self._repos.push(normalizeRepo(self.api._simplifyRepo(res.data)));
+                const repoData = normalizeRepo(self.api._simplifyRepo(res.data));
+                // Set starred_at to now since this is a fresh star action
+                repoData.starred_at = new Date().toISOString();
+                self._repos.push(repoData);
                 self.storage.saveCache({
                   repos: self._repos,
                   fetched_at: self.storage.getCache().fetched_at || Date.now(),
