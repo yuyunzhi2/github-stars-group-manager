@@ -2245,6 +2245,7 @@
         console.error('[SGM] _loadFromAPI threw:', err);
       }
       this._bindUIEvents();
+      this._bindStarEvents();
       this._render();
       this._initialized = true;
     }
@@ -2582,6 +2583,108 @@
           this.ui.showToast('设置已保存');
         }
       });
+    }
+
+    /**
+     * Listen for star/unstar actions so the repo list stays current.
+     * - MutationObserver on Star buttons: detects click on any Star button on the page
+     * - visibilitychange: refresh data when user returns to this tab after visiting another page
+     */
+    _bindStarEvents() {
+      // --- Watch Star buttons on the entire page via MutationObserver ---
+      // GitHub's Star button changes its text/aria-label on click ("Star" → "Unstar" or vice versa).
+      // We observe attribute mutations on star-related buttons.
+      const self = this;
+
+      function handleStarToggle(repoFullName, isStarred) {
+        if (isStarred) {
+          // User starred a repo — add to _repos if not already present
+          if (!self._repos.find(r => r.full_name === repoFullName)) {
+            // Fetch repo details from API to get full data
+            self.api._request(`${API_BASE}/repos/${encodeURIComponent(repoFullName)}`, {
+              'Accept': 'application/vnd.github.v3+json',
+              ...(self._settings.github_token ? { 'Authorization': `Bearer ${self._settings.github_token}` } : {})
+            }).then(res => {
+              if (res.ok && res.data) {
+                self._repos.push(normalizeRepo(self.api._simplifyRepo(res.data)));
+                self.storage.saveCache({
+                  repos: self._repos,
+                  fetched_at: self.storage.getCache().fetched_at || Date.now(),
+                  total_count: self._repos.length,
+                });
+                self._render();
+                self.ui.showToast(`已添加 ${repoFullName}`);
+              }
+            }).catch(() => {});
+          }
+        } else {
+          // User unstarred a repo — remove from _repos and all groups
+          const idx = self._repos.findIndex(r => r.full_name === repoFullName);
+          if (idx !== -1) {
+            self._repos.splice(idx, 1);
+            // Remove from all groups
+            self.groups.setRepoGroups(repoFullName, []);
+            self.groups.flush();
+            self.storage.saveCache({
+              repos: self._repos,
+              fetched_at: self.storage.getCache().fetched_at || Date.now(),
+              total_count: self._repos.length,
+            });
+            self._render();
+            self.ui.showToast(`已移除 ${repoFullName}`);
+          }
+        }
+      }
+
+      // Detect Star button clicks on the current page.
+      // Star buttons on GitHub have aria-label "Star" or "Unstar", and data attributes.
+      // We intercept clicks on [aria-label="Star"] and [aria-label="Unstar"] buttons.
+      document.addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if (!btn) return;
+
+        const ariaLabel = btn.getAttribute('aria-label') || '';
+        // GitHub star buttons: aria-label="Star" or "Unstar" (English) or translations
+        // Also check for the star button shape/form class patterns
+        if (!/^(Star|Unstar|Star this repository|Unstar this repository)/i.test(ariaLabel)) return;
+
+        // Find the repo full_name from the page context
+        // The button is usually inside a repo card or repo header
+        const repoLink = btn.closest('[data-testid="starred-repo"]')
+          || btn.closest('.col-12.d-flex')
+          || btn.closest('.col-12.d-block')
+          || btn.closest('.d-flex.flex-justify-between')
+          || btn.closest('[class*="repo"]');
+        const nameEl = repoLink?.querySelector('h3 a, a[data-pjax="#repo-content-pjax-container"]');
+        const fullName = nameEl
+          ? nameEl.getAttribute('href')?.replace(/^\//, '')
+          : window.location.pathname.match(/^\/([^/]+\/[^/]+)/)?.[1];
+
+        if (!fullName) return;
+
+        // Determine the new state: "Star" means just starred, "Unstar" means just unstarred
+        const isNowStarred = /^Star/i.test(ariaLabel);
+        handleStarToggle(fullName, isNowStarred);
+      }, true); // capture phase to catch before GitHub's handler changes the button
+
+      // --- Refresh on visibility change (user returns from another tab/window) ---
+      let _lastVisibleTime = Date.now();
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          const elapsed = Date.now() - _lastVisibleTime;
+          _lastVisibleTime = Date.now();
+          // If user was away for more than 30 seconds, refresh data
+          if (elapsed > 30000) {
+            this._loadFromAPI(true).then(() => this._render());
+          }
+        } else {
+          _lastVisibleTime = Date.now();
+        }
+      });
+
+      // --- Refresh on Turbo/pjax navigation back to Stars tab ---
+      // (initApp already handles this via turbo:load, but we also need
+      //  to refresh data if user navigated away then came back within the same session)
     }
 
     _render() {
