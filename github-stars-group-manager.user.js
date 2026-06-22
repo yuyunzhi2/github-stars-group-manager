@@ -22,6 +22,7 @@
   // --- Constants ---
   const API_BASE = 'https://api.github.com';
   const PER_PAGE = 100; // GitHub API max per page
+  const CACHE_VERSION = 2; // v2 = includes starred_at timestamps; v1 cache auto-invalidated
   const STORAGE_KEYS = {
     GROUPS: 'star_groups',
     CACHE: 'star_cache',
@@ -97,15 +98,18 @@
 
     // Cache operations
     getCache() {
-      return this.get(STORAGE_KEYS.CACHE, { repos: [], fetched_at: 0, total_count: 0 });
+      return this.get(STORAGE_KEYS.CACHE, { repos: [], fetched_at: 0, total_count: 0, version: 0 });
     }
 
     saveCache(cache) {
+      cache.version = CACHE_VERSION;
       this.set(STORAGE_KEYS.CACHE, cache);
     }
 
     isCacheExpired(maxAgeMs = 24 * 60 * 60 * 1000) {
       const cache = this.getCache();
+      // Force expire if cache version is outdated (e.g. missing starred_at)
+      if (!cache.version || cache.version < CACHE_VERSION) return true;
       return !cache.fetched_at || (Date.now() - cache.fetched_at > maxAgeMs);
     }
 
